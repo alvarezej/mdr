@@ -60,7 +60,7 @@ pub const GITHUB_CSS: &str = r#"
 html, body { margin: 0; padding: 0; height: 100%; }
 body {
     font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
-    font-size: 16px;
+    font-size: 1rem;
     line-height: 1.6;
     color: var(--fg);
     background: var(--bg);
@@ -105,8 +105,8 @@ body {
 .sidebar li.toc-h5 a, .sidebar li.toc-h6 a { padding-left: 56px; font-size: 12px; color: var(--blockquote); }
 .content {
     margin-left: 250px;
-    max-width: 900px;
-    padding: 32px 24px 3rem;
+    max-width: none;
+    padding: 32px 48px 3rem;
     flex: 1;
 }
 h1, h2, h3, h4, h5, h6 { margin-top: 24px; margin-bottom: 16px; font-weight: 600; line-height: 1.25; }
@@ -143,8 +143,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
 img { max-width: 100%; }
 ul, ol { padding-left: 2em; }
 input[type="checkbox"] { margin-right: 0.5em; }
-.mermaid-diagram { text-align: center; margin: 16px 0; }
-.mermaid-diagram svg { max-width: 100%; height: auto; }
+.mermaid-diagram, pre.mermaid, .mermaid { text-align: center; margin: 20px 0; background: transparent; border: none; padding: 0; }
+.mermaid-diagram svg, pre.mermaid svg, .mermaid svg { max-width: 100%; height: auto; }
 .mermaid-error {
     border: 2px solid #f85149;
     border-radius: 6px;

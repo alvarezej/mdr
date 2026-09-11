@@ -228,7 +228,7 @@ fn document_swap_script(markdown: &str, base_dir: &Path) -> String {
     let body = sanitize_document_html(&resolve_local_images(&parse_markdown(markdown), base_dir));
     let toc_html = build_toc_html(&toc::extract_toc(markdown));
     format!(
-        "document.querySelector('.content').innerHTML = {}; document.querySelector('.sidebar ul').innerHTML = {}; if (window.hljs) hljs.highlightAll();",
+        "document.querySelector('.content').innerHTML = {}; document.querySelector('.sidebar ul').innerHTML = {}; if (window.hljs) hljs.highlightAll(); window.mdrRenderMermaid();",
         serde_json::to_string(&body).unwrap_or_default(),
         serde_json::to_string(&toc_html).unwrap_or_default(),
     )
@@ -434,8 +434,9 @@ fn build_toc_html(entries: &[toc::TocEntry]) -> String {
     toc
 }
 
-/// Mermaid.js embedded at compile time — only injected when the Rust renderer fails.
+/// Mermaid.js embedded at compile time for offline webview rendering.
 const MERMAID_JS: &str = include_str!("../../assets/mermaid.min.js");
+const MERMAID_LEGEND_JS: &str = include_str!("../../assets/mermaid-legend.js");
 
 /// Highlight.js embedded at compile time — only injected when code blocks are present.
 const HIGHLIGHT_JS: &str = include_str!("../../assets/highlight.min.js");
@@ -568,16 +569,59 @@ fn build_html(body: &str, toc_entries: &[toc::TocEntry]) -> String {
     // and are never sanitised.
     let body = &sanitize_document_html(body);
     let toc_html = build_toc_html(toc_entries);
-    // Only include mermaid.js if there are fallback blocks that need JS rendering
-    let mermaid_script = if body.contains(r#"class="mermaid""#) {
-        format!(
-            r#"<script>{}</script>
-<script>mermaid.initialize({{ startOnLoad: true, theme: (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'default' }});</script>"#,
-            MERMAID_JS
-        )
-    } else {
-        String::new()
-    };
+    // Keep the renderer available even when the initial document has no diagrams:
+    // live reload and linked documents reuse this page without loading scripts.
+    let mermaid_script = format!(
+        r#"<script>{mermaid_js}</script>
+<script>{mermaid_legend_js}</script>
+<script>
+(function() {{
+    try {{
+        mermaid.initialize({{
+            startOnLoad: false,
+            theme: (document.documentElement.getAttribute('data-theme') === 'dark' || (!document.documentElement.getAttribute('data-theme') && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) ? 'dark' : 'default',
+            securityLevel: 'loose',
+            fontFamily: 'inherit'
+        }});
+        window.mdrRenderMermaid = function() {{
+            try {{
+                document.querySelectorAll('pre.mermaid').forEach(window.mdrMermaidLegends.capture);
+                return mermaid.run().then(function() {{
+                    document.querySelectorAll('pre.mermaid').forEach(function(pre) {{
+                        var svg = pre.querySelector('svg');
+                        if (svg && svg.viewBox.baseVal.width) {{
+                            // Some chart renderers under-estimate text extents in
+                            // narrow panes. Include all drawn labels in the viewport.
+                            var bounds = svg.getBBox();
+                            var box = svg.viewBox.baseVal;
+                            var left = Math.min(box.x, bounds.x);
+                            var top = Math.min(box.y, bounds.y);
+                            var right = Math.max(box.x + box.width, bounds.x + bounds.width);
+                            var bottom = Math.max(box.y + box.height, bounds.y + bounds.height);
+                            svg.setAttribute('viewBox', [left, top, right - left, bottom - top].join(' '));
+                        }}
+                        window.mdrMermaidLegends.render(pre);
+                        pre.dataset.mdrRendered = 'true';
+                    }});
+                    document.dispatchEvent(new Event('mdr:mermaid-rendered'));
+                }}).catch(function(e) {{ console.error('Mermaid error:', e); }});
+            }} catch(e) {{
+                console.error('Mermaid sync error:', e);
+            }}
+        }};
+        if (document.readyState === 'loading') {{
+            document.addEventListener('DOMContentLoaded', window.mdrRenderMermaid);
+        }} else {{
+            window.mdrRenderMermaid();
+        }}
+    }} catch(e) {{
+        console.error('Mermaid init error:', e);
+    }}
+}})();
+</script>"#,
+        mermaid_js = MERMAID_JS,
+        mermaid_legend_js = MERMAID_LEGEND_JS
+    );
     // Only include highlight.js when there are fenced code blocks to highlight
     let highlight_script = if body.contains("<pre><code") {
         format!(
@@ -602,6 +646,13 @@ fn build_html(body: &str, toc_entries: &[toc::TocEntry]) -> String {
         }
     );
 
+    let custom_css = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .map(|h| h.join(".config/mdr/style.css"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+
     // The CSP below is a second line of defence behind `sanitize_document_html`:
     // no network access at all (`default-src`/`connect-src 'none'`), no plugin
     // or frame, no form submission, no `<base>` rewriting; images may only be
@@ -622,7 +673,7 @@ fn build_html(body: &str, toc_entries: &[toc::TocEntry]) -> String {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none';">
 <style>{css}</style>
 <style>
-.expandable {{ position: relative; }}
+.expandable {{ display: block; width: 100%; position: relative; margin: 0 auto; }}
 .expand-btn {{
     position: absolute; top: 6px; right: 6px;
     width: 28px; height: 28px;
@@ -641,9 +692,34 @@ fn build_html(body: &str, toc_entries: &[toc::TocEntry]) -> String {
 }}
 #expand-content {{ cursor: default; }}
 #expand-content img {{ width: 95vw; height: 95vh; object-fit: contain; }}
-#expand-content svg {{ width: 95vw; height: 95vh; }}
+#expand-content svg {{ width: 95vw; height: 95vh; max-width: none !important; }}
 .expandable img, .expandable svg {{ cursor: zoom-in; }}
-.content svg {{ width: 100% !important; height: auto !important; display: block; }}
+.content svg {{ max-width: 100%; height: auto; }}
+.content {{ min-width: 0; }}
+.mermaid-diagram {{
+    display: block;
+    text-align: center;
+    margin: 24px 0;
+    overflow-x: auto;
+}}
+pre.mermaid {{
+    display: block;
+    font-family: inherit;
+    width: 100%;
+    text-align: center;
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+}}
+.content .mermaid-diagram .expandable > svg {{
+    /* Preserve Mermaid's inline natural max-width. Auto width collapses in WebKit. */
+    width: 100% !important;
+    height: auto !important;
+    display: block;
+    margin: 0 auto;
+}}
 body.toc-hidden .sidebar {{ display: none; }}
 body.toc-hidden .content {{ margin-left: 0; }}
 #shortcuts-overlay {{
@@ -673,6 +749,7 @@ body.toc-hidden .content {{ margin-left: 0; }}
 }}
 </style>
 <style>{theme_overrides}</style>
+<style>{custom_css}</style>
 </head>
 <body>
 <nav class="sidebar">
@@ -807,7 +884,13 @@ document.querySelector('.sidebar').addEventListener('click', function(e) {{
     }}
 
     function wrap(el) {{
+        if (!el.isConnected || !el.parentElement) return;
         if (el.closest('.expandable') || el.closest('#expand-overlay')) return;
+        // Mermaid temporarily inserts SVGs while measuring text. Moving them
+        // into zoom wrappers at that point changes WebKit's text measurements.
+        var diagram = el.closest('pre.mermaid');
+        if (diagram && diagram.dataset.mdrRendered !== 'true') return;
+        if (el.parentElement.closest('svg')) return;
         var w = document.createElement('div');
         w.className = 'expandable';
         el.parentNode.insertBefore(w, el);
@@ -849,6 +932,10 @@ document.querySelector('.sidebar').addEventListener('click', function(e) {{
         }});
     }}).observe(document.querySelector('.content'), {{ childList: true, subtree: true }});
 
+    document.addEventListener('mdr:mermaid-rendered', function() {{
+        document.querySelectorAll('pre.mermaid > svg').forEach(wrap);
+    }});
+
     document.readyState === 'loading'
         ? document.addEventListener('DOMContentLoaded', function() {{ document.querySelectorAll('.content img, .content svg').forEach(wrap); }})
         : document.querySelectorAll('.content img, .content svg').forEach(wrap);
@@ -865,7 +952,8 @@ document.querySelector('.sidebar').addEventListener('click', function(e) {{
         mermaid_script = mermaid_script,
         theme_overrides = theme_overrides,
         shortcuts_help = build_shortcuts_help_html(),
-        keyboard_script = keyboard_script()
+        keyboard_script = keyboard_script(),
+        custom_css = custom_css,
     )
 }
 
@@ -2219,6 +2307,23 @@ mod tests {
         ] {
             assert!(page.contains(directive), "CSP misses {directive}: {page}");
         }
+    }
+
+    #[test]
+    #[ignore = "exports a page for the WebKitGTK rendering regression check"]
+    fn export_mermaid_test_page() {
+        let md = std::fs::read_to_string(std::env::var("MDR_TEST_MARKDOWN").unwrap()).unwrap();
+        let page = build_html(&parse_markdown(&md), &[]);
+        std::fs::write(std::env::var("MDR_TEST_HTML").unwrap(), &page).unwrap();
+    }
+
+    #[test]
+    fn mermaid_is_available_after_opening_a_document_without_diagrams() {
+        let page = build_html("<p>No diagrams yet</p>", &[]);
+        assert!(page.contains(MERMAID_JS));
+        assert!(page.contains("window.mdrRenderMermaid = function()"));
+        let swap = document_swap_script("```mermaid\ngraph LR\n A-->B\n```", Path::new("."));
+        assert!(swap.contains("window.mdrRenderMermaid();"));
     }
 
     #[test]

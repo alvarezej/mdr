@@ -10,6 +10,10 @@
 
 ## Why mdr?
 
+This fork's customized viewer is on the **`personal` branch**; `main` follows
+[CleverCloud/mdr](https://github.com/CleverCloud/mdr). See [FORK.md](FORK.md) for
+the Mermaid fixes, optional stylesheet, installation, and upstream update steps.
+
 **Built for the LLM era.** AI tools generate Markdown constantly — code documentation, technical specs, analysis reports — packed with diagrams, tables, and structured content. You need a fast way to read them.
 
 Most developers end up previewing Markdown in VS Code, pasting into a browser, or squinting at raw text in the terminal. None of these handle Mermaid diagrams. None are instant. mdr is.

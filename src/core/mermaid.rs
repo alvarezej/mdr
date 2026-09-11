@@ -94,7 +94,7 @@ fn suppress_stderr() -> StderrGuard {
     StderrGuard {}
 }
 
-/// Process HTML from comrak: find mermaid code blocks and replace with rendered SVG.
+/// Preserve Mermaid source for browser rendering, including HTML line breaks.
 /// Mermaid blocks appear as: <pre><code class="language-mermaid">...</code></pre>
 pub fn process_mermaid_blocks(html: &str) -> String {
     use std::sync::OnceLock;
@@ -105,10 +105,10 @@ pub fn process_mermaid_blocks(html: &str) -> String {
 
     re.replace_all(html, |caps: &regex::Captures| {
         let source = html_decode(&caps[1]);
-        match render_mermaid_to_svg(&source) {
-            Ok(svg) => format!(r#"<div class="mermaid-diagram">{}</div>"#, svg),
-            Err(_) => format!(r#"<pre class="mermaid">{}</pre>"#, html_encode(&source)),
-        }
+        format!(
+            r#"<div class="mermaid-diagram"><pre class="mermaid">{}</pre></div>"#,
+            html_encode(&source)
+        )
     })
     .to_string()
 }
@@ -370,13 +370,29 @@ mod tests {
         // Use obviously invalid mermaid that will produce an error
         let html = r#"<pre><code class="language-mermaid">not valid %%% !@#</code></pre>"#;
         let result = process_mermaid_blocks(html);
-        if result.contains("mermaid-fallback") {
-            // Fallback div should contain the original source
-            assert!(result.contains("Mermaid Diagram"));
-        } else if result.contains("mermaid-error") {
-            assert!(result.contains("Mermaid error:"));
-        }
-        // If it somehow renders successfully, that's also fine
+        assert!(result.contains("<pre class=\"mermaid\">not valid %%% !@#</pre>"));
+    }
+
+    #[test]
+    fn browser_source_preserves_multiline_labels_and_xycharts() {
+        let source = "flowchart LR\n A[\"First<br/>Second & third\"] --> B\n";
+        let html = format!(
+            "<pre><code class=\"language-mermaid\">{}</code></pre>",
+            html_encode(source)
+        );
+        let result = process_mermaid_blocks(&html);
+        assert!(result.contains(&html_encode(source)));
+        assert!(
+            !result.contains("<br/>"),
+            "source must remain escaped until Mermaid reads it"
+        );
+
+        let chart = "xychart-beta\n x-axis [Jan, Feb]\n y-axis 0 --> 10\n bar [3, 7]\n";
+        let html = format!(
+            "<pre><code class=\"language-mermaid\">{}</code></pre>",
+            html_encode(chart)
+        );
+        assert!(process_mermaid_blocks(&html).contains(&html_encode(chart)));
     }
 
     // --- egui-specific tests ---
