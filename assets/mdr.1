@@ -40,6 +40,25 @@ the config file with
 The flag only turns the mode on: it cannot re\-enable network access when the
 config file already disables it.
 .TP
+.BR \-\-export\-pdf " " \fIPDF\fR
+Export to a PDF file and exit without opening a viewer. Includes a linked
+contents page, bookmarks, page numbers, images and rendered diagrams.
+Contents entries include section page numbers with dotted leaders, verified
+against the final PDF pagination.
+Requires webview support and an installed Chrome or Chromium.
+.TP
+.B \-\-no\-toc
+Omit the contents page when used with
+.BR \-\-export\-pdf .
+.TP
+.B \-\-landscape
+Use landscape A4 pages when used with
+.BR \-\-export\-pdf .
+.TP
+.BR \-\-pdf\-browser " " \fIPATH\fR
+Select a Chrome/Chromium executable for PDF export instead of auto-detection.
+The MDR_PDF_BROWSER environment variable can also select the executable.
+.TP
 .BR \-\-config " " \fIPATH\fR
 Path to the config file. Defaults to
 .IR ~/.config/mdr/config.kdl .
@@ -101,6 +120,9 @@ Read from standard input:
 .TP
 Render without touching the network:
 .B mdr \-\-offline README.md
+.TP
+Export a PDF with a contents page:
+.B mdr README.md \-\-export\-pdf README.pdf
 .SH EXIT STATUS
 .B mdr
 exits with status 0 on success and a non\-zero status if the file cannot be

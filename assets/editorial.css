@@ -248,6 +248,70 @@ tr:hover td {
 }
 
 /* --------------------------------------------------------------------------
+   Print
+   -------------------------------------------------------------------------- */
+@media print {
+    html, body {
+        width: auto !important;
+        height: auto !important;
+    }
+
+    body {
+        display: block !important;
+        font-size: 10pt !important;
+        line-height: 1.45;
+    }
+
+    .content,
+    body.toc-hidden .content {
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    table {
+        width: 100% !important;
+        max-width: 100% !important;
+        margin: 14pt 0;
+        box-shadow: none !important;
+    }
+
+    th, td {
+        padding: 4pt 5pt !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+        word-wrap: break-word;
+        word-break: break-word;
+    }
+
+    th code, td code {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    table.mdr-wide-table {
+        table-layout: fixed;
+        font-size: 8.5pt;
+    }
+
+    table.mdr-extra-wide-table {
+        font-size: 7.5pt;
+    }
+
+    thead {
+        display: table-header-group;
+    }
+
+    tr {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+}
+
+/* --------------------------------------------------------------------------
    Interactive Elements & Diagrams
    -------------------------------------------------------------------------- */
 input[type="checkbox"] {

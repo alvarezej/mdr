@@ -27,6 +27,10 @@ webview-backend = [
   "dep:wry",
   "dep:tao",
   "dep:muda",
+  "dep:rfd",
+  "dep:gtk",
+  "dep:lopdf",
+  "dep:serde-saphyr",
   "dep:resvg",
   "dep:usvg",
   "dep:tiny-skia",
@@ -57,6 +61,7 @@ regex = "1"
 serde_json = "1"
 base64 = "0.22"
 kdl = "6"
+tempfile = "3"
 
 # egui backend
 eframe = { version = "0.34", features = ["persistence"], optional = true }
@@ -75,6 +80,8 @@ fontdb = { version = "0.23", optional = true }
 wry = { version = "0.55", optional = true }
 tao = { version = "0.35", optional = true }
 muda = { version = "0.19", optional = true }
+lopdf = { version = "0.47", default-features = false, optional = true }
+serde-saphyr = { version = "2", default-features = false, features = ["deserialize"], optional = true }
 
 # tui backend
 ratatui = { version = "0.30", optional = true }
@@ -94,11 +101,14 @@ syntect = { version = "5", default-features = false, features = [
 ], optional = true }
 ureq = { version = "3", optional = true }
 
-[dev-dependencies]
-tempfile = "3"
-
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["gtk3"], optional = true }
 
 [package.metadata.deb]
 section = "text"

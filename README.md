@@ -124,6 +124,42 @@ mdr --help
 Clicking an `http(s)` link opens it in your system browser; a link to another
 local `.md` file opens that file in mdr.
 
+### PDF export
+
+```bash
+# Export without opening a viewer window
+mdr report.md --export-pdf report.pdf
+
+# Landscape for wide tables; optionally omit the contents page
+mdr report.md --export-pdf report.pdf --landscape --no-toc
+```
+
+Exports include a linked table of contents with dotted leaders and section page
+numbers, PDF bookmarks, A4 pages with numbered footers, syntax highlighting,
+embedded images and rendered Mermaid diagrams with their legends. Code and table
+cells wrap to fit the page. Contents numbers match the physical PDF page numbers,
+including the contents pages, and are checked against the final pagination.
+
+Command-line export requires a build with `webview-backend` and an installed
+Chrome or Chromium. mdr detects the browser automatically; use
+`--pdf-browser /path/to/chrome` or `MDR_PDF_BROWSER` to select it explicitly.
+It uses an isolated temporary profile and waits for diagrams, images and fonts
+before printing. `--offline` also applies to PDF export. Existing output files
+are replaced only after export succeeds.
+
+In the webview viewer, click **Export PDF…** or press **Ctrl/Cmd+Shift+E**,
+choose a destination in the save-file dialog, and mdr generates the PDF in the
+background. Choose **Portrait** or **Landscape** next to the button. This uses
+the same exporter as the command line, with numbered contents, PDF bookmarks
+and page footers.
+
+PDF export uses its own page layout: 10-point body text, compact headings,
+proportional table columns and diagrams sized to the printable page. Viewer
+zoom and `~/.config/mdr/style.css` do not affect exported PDFs. The screen's
+contents toggle does not hide the exported contents page.
+
+**Print…** / **Ctrl/Cmd+P** opens the ordinary system print dialog separately.
+
 ### GUI (egui) keybindings
 
 | Key | Action |
@@ -154,11 +190,16 @@ Press `?` in the webview backend for this list.
 | `Ctrl/Cmd` + `+` / `-` / `0` | Zoom in / out / reset |
 | `Ctrl/Cmd+B` | Show or hide the table of contents |
 | `Ctrl/Cmd+D` | Switch between the light and dark theme |
-| `Ctrl/Cmd+P` | Print or export to PDF |
+| `Ctrl/Cmd+P` | Open the system print dialog |
+| `Ctrl/Cmd+Shift+E` | Export PDF with contents and bookmarks |
 | `?` | Show or hide the shortcut list |
 
 `Ctrl/Cmd+D` overrides the system colour scheme for the current window; without it
 the theme follows `prefers-color-scheme`.
+
+When printing, the webview removes its screen-only sidebar spacing, wraps long
+table-cell contents, and compacts tables with many columns. For exceptionally
+wide tables, select landscape orientation in the system print dialog.
 
 ### TUI keybindings
 
@@ -194,6 +235,60 @@ the theme follows `prefers-color-scheme`.
 - **Dark/Light theme** — follows OS theme, overridable with `Ctrl/Cmd+D` (webview backend)
 - **YAML front matter** — recognised as metadata, so it is neither rendered nor listed in the TOC
 - **Unique heading anchors** — repeated headings get `setup`, `setup-1`, … as GitHub does
+
+## Inline colours and emphasis
+
+In the webview viewer and PDF exports, tag individual terms or phrases:
+
+```markdown
+A `new term`{.blue} appears here.
+[This particular phrase]{.purple} needs attention.
+```
+
+The built-in colours are muted: `blue`, `purple`, `red`, `orange`, `green`,
+`teal`, `pink`, `yellow` and `gray` (`amber`, `cyan` and `grey` are aliases).
+They use text colour only. Untagged occurrences keep their ordinary appearance.
+
+For your own names, hex colours and treatments, add YAML metadata at the start
+of the file:
+
+```yaml
+---
+mdr:
+  styles:
+    concept: "#5B6EA6"
+    note:
+      color: purple
+      treatment: tint
+    warning:
+      color: orange
+      treatment: underline
+---
+```
+
+Then use `` `bounded context`{.concept} ``, `[a gentle note]{.note}` or
+`[check this detail]{.warning}` anywhere in the document, including headings and
+tables. Phrases may contain ordinary Markdown such as emphasis and links.
+Existing Markdown links and images keep their usual meaning.
+
+`text` (the default) colours the text; `tint` adds a faint background;
+`underline` adds a thin coloured underline while keeping the normal text colour.
+Styled inline code keeps its monospace font with a plain background. These
+treatments retain the surrounding font size and weight.
+
+Colours accept the built-in names or quoted `"#RGB"` / `"#RRGGBB"` values.
+Dark mode automatically lightens colours for readability; set an optional
+`dark_color` alongside `color` to choose it yourself. PDF exports use the light
+colours. Escape the opening bracket or brace to show literal syntax:
+`\[phrase]{.blue}` or `` `term`\{.blue} ``. Unknown or invalid styles stay literal.
+The terminal and egui renderers currently display the annotations as text.
+
+Try the [complete demo](tests/inline-styles.md):
+
+```bash
+mdr tests/inline-styles.md
+mdr tests/inline-styles.md --export-pdf /tmp/inline-styles.pdf
+```
 
 ## Images
 

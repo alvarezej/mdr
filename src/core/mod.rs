@@ -6,6 +6,8 @@ pub mod image_validation;
 // The HTML pipeline exists for the webview backend; egui and tui render from
 // the Markdown source directly.
 #[cfg(feature = "webview-backend")]
+pub mod inline_styles;
+#[cfg(feature = "webview-backend")]
 pub mod markdown;
 pub mod mermaid;
 // Remote images are only inlined by the two graphical backends; tui fetches
@@ -13,6 +15,8 @@ pub mod mermaid;
 #[cfg(any(feature = "egui-backend", feature = "webview-backend"))]
 pub mod net;
 pub mod paths;
+#[cfg(feature = "webview-backend")]
+pub mod pdf;
 // Untrusted HTML only reaches a real HTML engine in the webview backend.
 #[cfg(feature = "webview-backend")]
 pub mod sanitize;

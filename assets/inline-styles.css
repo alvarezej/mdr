@@ -1,0 +1,26 @@
+/* Semantic inline styles retain the surrounding typography and wrap naturally. */
+.content .mdr-inline { font-weight: inherit; font-size: inherit; }
+.content .mdr-inline-text, .content .mdr-inline-tint { color: var(--mdr-inline-accent) !important; }
+.content .mdr-inline-text, .content .mdr-inline-underline { background: transparent !important; }
+.content .mdr-inline-tint {
+    background: var(--mdr-inline-tint) !important;
+    border-radius: 3px;
+    padding: 1px 3px;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+}
+.content .mdr-inline-underline {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: var(--mdr-inline-accent) !important;
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 0.2em;
+}
+.content .mdr-inline > code {
+    color: inherit !important;
+    background: transparent !important;
+    border: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    font-weight: inherit;
+}

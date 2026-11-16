@@ -24,16 +24,22 @@ pub fn extract_toc(content: &str) -> Vec<TocEntry> {
     // Keep front matter out of the TOC, and stop its `---` fence from being
     // read as a setext heading (#56).
     options.extension.front_matter_delimiter = Some("---".to_string());
+    #[cfg(feature = "webview-backend")]
+    {
+        options.parse.escaped_char_spans = true;
+    }
 
     let root = parse_document(&arena, content, &options);
+    #[cfg(feature = "webview-backend")]
+    let _ = crate::core::inline_styles::apply(root, &arena);
     let mut entries = Vec::new();
-    // Same walk order as `markdown::add_heading_ids`, so the anchors match (#65).
+    // Same text and walk order as the HTML heading adapter, so anchors match.
     let mut slugs = SlugGenerator::new();
 
     for node in root.descendants() {
         if let NodeValue::Heading(heading) = &node.data.borrow().value {
             let level = heading.level;
-            let text = collect_text(node);
+            let text = comrak::html::collect_text(node);
             let anchor = slugs.generate(&text);
             entries.push(TocEntry {
                 level,
@@ -44,22 +50,6 @@ pub fn extract_toc(content: &str) -> Vec<TocEntry> {
     }
 
     entries
-}
-
-/// Collect all text content from a node and its children.
-fn collect_text<'a>(
-    node: &'a comrak::arena_tree::Node<'a, std::cell::RefCell<comrak::nodes::Ast>>,
-) -> String {
-    let mut text = String::new();
-    for child in node.descendants() {
-        if let NodeValue::Text(ref t) = child.data.borrow().value {
-            text.push_str(t);
-        }
-        if let NodeValue::Code(ref c) = child.data.borrow().value {
-            text.push_str(&c.literal);
-        }
-    }
-    text
 }
 
 #[cfg(test)]
@@ -208,7 +198,7 @@ mod anchor_tests {
     #[cfg(feature = "webview-backend")]
     #[test]
     fn toc_anchors_match_the_rendered_html_ids() {
-        let md = "# Intro\n\n## Setup\n\n## Setup\n\n## Usage\n";
+        let md = "# Intro\n\n## Setup\n\n## Setup\n\n## Usage\n\n## Tables & code\n\n## Literal `<tag>` & Café\n\n## &#65; &copy;\n\nMultiline\nheading\n---\n";
         let html = crate::core::markdown::parse_markdown(md);
         for entry in extract_toc(md) {
             assert!(

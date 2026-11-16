@@ -25,7 +25,7 @@
           nativeBuildInputs = with pkgs; [
             pkg-config
           ] ++ lib.optionals stdenv.isLinux [
-            wrapGAppsHook
+            wrapGAppsHook3
           ];
 
           # On Darwin the WebKit/AppKit frameworks come from the default SDK of
@@ -34,7 +34,10 @@
           buildInputs = with pkgs; lib.optionals stdenv.isLinux [
             gtk3
             webkitgtk_4_1
-            libxdo
+            # xdotool provides both the xdotool utility and libxdo.pc/libxdo.so
+            # required by wry on Linux. nixpkgs no longer exposes a separate
+            # package named libxdo.
+            xdotool
             libGL
           ];
 

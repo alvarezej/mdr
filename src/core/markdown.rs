@@ -1,6 +1,10 @@
 use crate::core::mermaid::process_mermaid_blocks;
 use crate::core::slug::SlugGenerator;
-use comrak::{markdown_to_html, Options};
+use comrak::adapters::{HeadingAdapter, HeadingMeta};
+use comrak::options::Plugins;
+use comrak::{format_html_with_plugins, parse_document, Arena, Options};
+use std::fmt;
+use std::sync::Mutex;
 
 /// Convert markdown content to HTML with all GFM extensions enabled.
 /// Processes mermaid code blocks into inline SVG diagrams.
@@ -16,36 +20,39 @@ pub fn parse_markdown(content: &str) -> String {
     // setext heading and the metadata is rendered as document text (#56).
     options.extension.front_matter_delimiter = Some("---".to_string());
     options.render.r#unsafe = true;
+    options.parse.escaped_char_spans = true;
 
-    let html = markdown_to_html(content, &options);
-    let html = add_heading_ids(&html);
-    process_mermaid_blocks(&html)
+    let headings = HeadingIds(Mutex::new(SlugGenerator::new()));
+    let mut plugins = Plugins::default();
+    plugins.render.heading_adapter = Some(&headings);
+    let arena = Arena::new();
+    let root = parse_document(&arena, content, &options);
+    let styles = crate::core::inline_styles::apply(root, &arena);
+    let mut html = String::new();
+    format_html_with_plugins(root, &options, &mut html, &plugins).unwrap();
+    let mut html = process_mermaid_blocks(&html);
+    html.push_str(&styles);
+    html
 }
 
-/// Add id attributes to heading tags for anchor navigation.
-fn add_heading_ids(html: &str) -> String {
-    use std::sync::OnceLock;
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(r"<(h[1-6])>(.*?)</h[1-6]>").unwrap());
-    // `replace_all` visits the headings in document order, which is the same
-    // order `toc::extract_toc` walks them in, so both end up with the same
-    // de-duplicated anchors (#65).
-    let mut slugs = SlugGenerator::new();
-    re.replace_all(html, |caps: &regex::Captures| {
-        let tag = &caps[1];
-        let content = &caps[2];
-        let plain_text = strip_html_tags(content);
-        let id = slugs.generate(&plain_text);
-        format!("<{} id=\"{}\">{}</{}>", tag, id, content, tag)
-    })
-    .to_string()
-}
+/// Comrak supplies decoded heading text before HTML escaping, matching the TOC.
+/// Generating anchors from rendered HTML confused `&amp;` with the word "amp".
+struct HeadingIds(Mutex<SlugGenerator>);
 
-fn strip_html_tags(html: &str) -> String {
-    use std::sync::OnceLock;
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(r"<[^>]+>").unwrap());
-    re.replace_all(html, "").to_string()
+impl HeadingAdapter for HeadingIds {
+    fn enter(
+        &self,
+        output: &mut dyn fmt::Write,
+        heading: &HeadingMeta,
+        _sourcepos: Option<comrak::nodes::Sourcepos>,
+    ) -> fmt::Result {
+        let id = self.0.lock().unwrap().generate(&heading.content);
+        write!(output, "<h{} id=\"{}\">", heading.level, id)
+    }
+
+    fn exit(&self, output: &mut dyn fmt::Write, heading: &HeadingMeta) -> fmt::Result {
+        writeln!(output, "</h{}>", heading.level)
+    }
 }
 
 /// CSS for GitHub-like markdown rendering with dark/light theme support.
@@ -218,19 +225,17 @@ mark.search-highlight.current { background: #ffd33d; color: #000; }
 mod tests {
     use super::*;
 
-    // --- add_heading_ids tests ---
+    // --- heading anchor tests ---
 
     #[test]
     fn heading_ids_added_to_h1() {
-        let html = "<h1>Hello World</h1>";
-        let result = add_heading_ids(html);
+        let result = parse_markdown("# Hello World");
         assert!(result.contains(r#"<h1 id="hello-world">Hello World</h1>"#));
     }
 
     #[test]
     fn heading_ids_added_to_multiple_levels() {
-        let html = "<h1>Title</h1><h2>Section</h2><h3>Sub</h3>";
-        let result = add_heading_ids(html);
+        let result = parse_markdown("# Title\n\n## Section\n\n### Sub");
         assert!(result.contains(r#"<h1 id="title">"#));
         assert!(result.contains(r#"<h2 id="section">"#));
         assert!(result.contains(r#"<h3 id="sub">"#));
@@ -238,8 +243,7 @@ mod tests {
 
     #[test]
     fn heading_ids_strip_inner_html_tags() {
-        let html = "<h2>Hello <code>world</code></h2>";
-        let result = add_heading_ids(html);
+        let result = parse_markdown("## Hello `world`");
         assert!(result.contains(r#"id="hello-world""#));
         // Inner HTML is preserved in content
         assert!(result.contains("<code>world</code>"));
@@ -247,18 +251,10 @@ mod tests {
 
     #[test]
     fn heading_ids_no_headings_unchanged() {
-        let html = "<p>Just a paragraph</p>";
-        let result = add_heading_ids(html);
-        assert_eq!(result, html);
-    }
-
-    // --- strip_html_tags tests ---
-
-    #[test]
-    fn strip_html_tags_removes_tags() {
-        assert_eq!(strip_html_tags("<b>bold</b>"), "bold");
-        assert_eq!(strip_html_tags("no tags"), "no tags");
-        assert_eq!(strip_html_tags("<a href=\"#\">link</a>"), "link");
+        assert_eq!(
+            parse_markdown("Just a paragraph"),
+            "<p>Just a paragraph</p>\n"
+        );
     }
 
     // --- parse_markdown integration tests ---

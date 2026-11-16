@@ -29,6 +29,22 @@ struct Cli {
     #[arg(long)]
     offline: bool,
 
+    /// Export a PDF and exit (requires webview support and Chrome/Chromium)
+    #[arg(long, value_name = "PDF")]
+    export_pdf: Option<PathBuf>,
+
+    /// Omit the PDF's contents page
+    #[arg(long, requires = "export_pdf")]
+    no_toc: bool,
+
+    /// Use landscape pages for PDF export
+    #[arg(long, requires = "export_pdf")]
+    landscape: bool,
+
+    /// Chrome/Chromium executable for PDF export (otherwise auto-detected)
+    #[arg(long, value_name = "PATH", requires = "export_pdf")]
+    pdf_browser: Option<PathBuf>,
+
     /// Colour scheme to assume for syntax highlighting in the terminal backend
     #[arg(long, value_name = "THEME", value_parser = parse_theme)]
     theme: Option<String>,
@@ -353,6 +369,34 @@ fn run(tmp_file: &mut Option<PathBuf>) -> i32 {
             }
         }
     };
+
+    if let Some(output) = cli.export_pdf {
+        #[cfg(feature = "webview-backend")]
+        return match core::pdf::export(
+            &file,
+            &output,
+            &core::pdf::PdfOptions {
+                toc: !cli.no_toc,
+                landscape: cli.landscape,
+                browser: cli.pdf_browser,
+            },
+        ) {
+            Ok(()) => {
+                eprintln!("Exported PDF: {}", output.display());
+                0
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                1
+            }
+        };
+        #[cfg(not(feature = "webview-backend"))]
+        {
+            let _ = output;
+            eprintln!("Error: PDF export requires a build with --features webview-backend");
+            return 1;
+        }
+    }
 
     let backend_str = cli
         .backend

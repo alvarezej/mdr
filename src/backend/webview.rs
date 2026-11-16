@@ -14,6 +14,11 @@ use crate::vlog;
 /// Events the page can send back to the native event loop.
 enum UserEvent {
     Quit,
+    Print,
+    ExportPdf {
+        landscape: bool,
+    },
+    PdfExportFinished(Result<PathBuf, String>),
     /// Scroll to a heading: `#anchor` links are handled natively instead of
     /// letting the window navigate (#55).
     ScrollToAnchor(String),
@@ -69,6 +74,7 @@ pub fn run(file_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop: EventLoop<UserEvent> = EventLoopBuilder::with_user_event().build();
     let quit_proxy = event_loop.create_proxy();
     let nav_proxy = event_loop.create_proxy();
+    let export_proxy = event_loop.create_proxy();
 
     // The document currently on screen, shared with the navigation handler so
     // relative links keep resolving after another file has been opened.
@@ -110,6 +116,12 @@ pub fn run(file_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let ipc_handler = move |request: wry::http::Request<String>| {
         if is_quit_request(request.body()) {
             let _ = quit_proxy.send_event(UserEvent::Quit);
+        } else if request.body() == "__MDR_IPC_PRINT__" {
+            let _ = quit_proxy.send_event(UserEvent::Print);
+        } else if request.body() == "__MDR_IPC_EXPORT_PDF__" {
+            let _ = quit_proxy.send_event(UserEvent::ExportPdf { landscape: false });
+        } else if request.body() == "__MDR_IPC_EXPORT_PDF_LANDSCAPE__" {
+            let _ = quit_proxy.send_event(UserEvent::ExportPdf { landscape: true });
         }
     };
 
@@ -167,6 +179,7 @@ pub fn run(file_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut watcher_rx = watcher_rx;
     let mut watched_file = file_path.clone();
     let mut base_dir = base_dir;
+    let mut exporting_pdf = false;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
@@ -185,6 +198,58 @@ pub fn run(file_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } => *control_flow = ControlFlow::Exit,
             Event::UserEvent(UserEvent::Quit) => *control_flow = ControlFlow::Exit,
+            Event::UserEvent(UserEvent::Print) => {
+                if let Err(error) = webview.print() {
+                    eprintln!("mdr: cannot open print dialog: {error}");
+                }
+            }
+            Event::UserEvent(UserEvent::ExportPdf { landscape }) => {
+                if exporting_pdf {
+                    return;
+                }
+                exporting_pdf = true;
+                let input = current_doc
+                    .lock()
+                    .map(|path| path.clone())
+                    .unwrap_or_else(|_| watched_file.clone());
+                let Some(mut output) = save_pdf_dialog(&window, &input) else {
+                    exporting_pdf = false;
+                    let _ = webview.evaluate_script("window.mdrFinishPdfExport({cancelled:true});");
+                    return;
+                };
+                if output.extension().is_none() {
+                    output.set_extension("pdf");
+                    // GTK confirms the name entered in the dialog. If we add
+                    // an extension, confirmation must cover the actual target.
+                    if output.exists() && !confirm_pdf_replace(&window, &output) {
+                        exporting_pdf = false;
+                        let _ =
+                            webview.evaluate_script("window.mdrFinishPdfExport({cancelled:true});");
+                        return;
+                    }
+                }
+                let proxy = export_proxy.clone();
+                // Rendering and browser startup must not block the viewer's event loop.
+                std::thread::spawn(move || {
+                    let options = crate::core::pdf::PdfOptions {
+                        toc: true,
+                        landscape,
+                        browser: None,
+                    };
+                    let result = crate::core::pdf::export(&input, &output, &options)
+                        .map(|()| output)
+                        .map_err(|error| error.to_string());
+                    let _ = proxy.send_event(UserEvent::PdfExportFinished(result));
+                });
+            }
+            Event::UserEvent(UserEvent::PdfExportFinished(result)) => {
+                exporting_pdf = false;
+                let status = match result {
+                    Ok(path) => serde_json::json!({"path": path.to_string_lossy()}),
+                    Err(error) => serde_json::json!({"error": error}),
+                };
+                let _ = webview.evaluate_script(&format!("window.mdrFinishPdfExport({status});"));
+            }
             Event::UserEvent(UserEvent::ScrollToAnchor(anchor)) => {
                 let _ = webview.evaluate_script(&scroll_to_anchor_script(&anchor));
             }
@@ -222,13 +287,94 @@ pub fn run(file_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     });
 }
 
+#[cfg(target_os = "linux")]
+fn save_pdf_dialog(window: &tao::window::Window, input: &Path) -> Option<PathBuf> {
+    use gtk::prelude::*;
+    use tao::platform::unix::WindowExtUnix;
+    // Use the existing GTK main thread, including its transient parent and
+    // overwrite confirmation, rather than starting a second GTK event loop.
+    let dialog = gtk::FileChooserDialog::new(
+        Some("Export PDF"),
+        Some(window.gtk_window()),
+        gtk::FileChooserAction::Save,
+    );
+    dialog.add_buttons(&[
+        ("Cancel", gtk::ResponseType::Cancel),
+        ("Save", gtk::ResponseType::Accept),
+    ]);
+    dialog.set_do_overwrite_confirmation(true);
+    dialog.set_current_folder(input.parent().unwrap_or(Path::new(".")));
+    dialog.set_current_name(
+        &input
+            .with_extension("pdf")
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy(),
+    );
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("PDF document"));
+    filter.add_pattern("*.pdf");
+    dialog.add_filter(filter);
+    let output = if dialog.run() == gtk::ResponseType::Accept {
+        dialog.filename()
+    } else {
+        None
+    };
+    dialog.close();
+    output
+}
+
+#[cfg(not(target_os = "linux"))]
+fn save_pdf_dialog(window: &tao::window::Window, input: &Path) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Export PDF")
+        .set_parent(window)
+        .add_filter("PDF document", &["pdf"])
+        .set_directory(input.parent().unwrap_or(Path::new(".")))
+        .set_file_name(
+            input
+                .with_extension("pdf")
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+        )
+        .save_file()
+}
+
+#[cfg(target_os = "linux")]
+fn confirm_pdf_replace(window: &tao::window::Window, output: &Path) -> bool {
+    use gtk::prelude::*;
+    use tao::platform::unix::WindowExtUnix;
+    let dialog = gtk::MessageDialog::new(
+        Some(window.gtk_window()),
+        gtk::DialogFlags::MODAL,
+        gtk::MessageType::Question,
+        gtk::ButtonsType::YesNo,
+        &format!("Replace {}?", output.display()),
+    );
+    let confirmed = dialog.run() == gtk::ResponseType::Yes;
+    dialog.close();
+    confirmed
+}
+
+#[cfg(not(target_os = "linux"))]
+fn confirm_pdf_replace(window: &tao::window::Window, output: &Path) -> bool {
+    rfd::MessageDialog::new()
+        .set_parent(window)
+        .set_title("Replace PDF?")
+        .set_description(format!("Replace {}?", output.display()))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show()
+        == rfd::MessageDialogResult::Yes
+}
+
 /// The script that swaps the document shown by the page, used both by live
 /// reload and by following a link to another Markdown file.
 fn document_swap_script(markdown: &str, base_dir: &Path) -> String {
     let body = sanitize_document_html(&resolve_local_images(&parse_markdown(markdown), base_dir));
     let toc_html = build_toc_html(&toc::extract_toc(markdown));
     format!(
-        "document.querySelector('.content').innerHTML = {}; document.querySelector('.sidebar ul').innerHTML = {}; if (window.hljs) hljs.highlightAll(); window.mdrRenderMermaid();",
+        "document.querySelector('.content').innerHTML = {}; document.querySelector('.sidebar ul').innerHTML = {}; if (window.hljs) hljs.highlightAll(); if (window.mdrPrepareTables) window.mdrPrepareTables(); window.mdrRefreshPrintToc(); window.mdrRenderMermaid();",
         serde_json::to_string(&body).unwrap_or_default(),
         serde_json::to_string(&toc_html).unwrap_or_default(),
     )
@@ -428,7 +574,9 @@ fn build_toc_html(entries: &[toc::TocEntry]) -> String {
     for entry in entries {
         toc.push_str(&format!(
             "<li class=\"toc-h{}\"><a href=\"#{}\">{}</a></li>",
-            entry.level, entry.anchor, entry.text
+            entry.level,
+            entry.anchor,
+            escape_html(&entry.text)
         ));
     }
     toc
@@ -437,6 +585,17 @@ fn build_toc_html(entries: &[toc::TocEntry]) -> String {
 /// Mermaid.js embedded at compile time for offline webview rendering.
 const MERMAID_JS: &str = include_str!("../../assets/mermaid.min.js");
 const MERMAID_LEGEND_JS: &str = include_str!("../../assets/mermaid-legend.js");
+const PRINT_CSS: &str = include_str!("../../assets/print.css");
+const PRINT_JS: &str = include_str!("../../assets/print.js");
+
+/// Reuse the viewer's Markdown, image, sanitisation and bundled diagram pipeline.
+pub(crate) fn pdf_html(markdown: &str, base_dir: &Path) -> String {
+    build_html_with_style(
+        &resolve_local_images(&parse_markdown(markdown), base_dir),
+        &toc::extract_toc(markdown),
+        false,
+    )
+}
 
 /// Highlight.js embedded at compile time — only injected when code blocks are present.
 const HIGHLIGHT_JS: &str = include_str!("../../assets/highlight.min.js");
@@ -564,11 +723,25 @@ fn rasterize_svg_to_png_data_uri(
 }
 
 fn build_html(body: &str, toc_entries: &[toc::TocEntry]) -> String {
+    build_html_with_style(body, toc_entries, true)
+}
+
+fn build_html_with_style(
+    body: &str,
+    toc_entries: &[toc::TocEntry],
+    include_custom_style: bool,
+) -> String {
     // Everything coming from the document is filtered here, before mdr's own
     // template is wrapped around it (#62). mdr's scripts are added afterwards
     // and are never sanitised.
     let body = &sanitize_document_html(body);
     let toc_html = build_toc_html(toc_entries);
+    let title = escape_html(
+        toc_entries
+            .first()
+            .map(|entry| entry.text.as_str())
+            .unwrap_or("Markdown document"),
+    );
     // Keep the renderer available even when the initial document has no diagrams:
     // live reload and linked documents reuse this page without loading scripts.
     let mermaid_script = format!(
@@ -577,16 +750,18 @@ fn build_html(body: &str, toc_entries: &[toc::TocEntry]) -> String {
 <script>
 (function() {{
     try {{
+        var mermaidTheme = (document.documentElement.getAttribute('data-theme') === 'dark' || (!document.documentElement.getAttribute('data-theme') && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) ? 'dark' : 'default';
         mermaid.initialize({{
             startOnLoad: false,
-            theme: (document.documentElement.getAttribute('data-theme') === 'dark' || (!document.documentElement.getAttribute('data-theme') && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) ? 'dark' : 'default',
+            theme: mermaidTheme,
             securityLevel: 'loose',
             fontFamily: 'inherit'
         }});
         window.mdrRenderMermaid = function() {{
+            window.mdrMermaidError = null;
             try {{
                 document.querySelectorAll('pre.mermaid').forEach(window.mdrMermaidLegends.capture);
-                return mermaid.run().then(function() {{
+                window.mdrMermaidReady = mermaid.run().then(function() {{
                     document.querySelectorAll('pre.mermaid').forEach(function(pre) {{
                         var svg = pre.querySelector('svg');
                         if (svg && svg.viewBox.baseVal.width) {{
@@ -602,12 +777,19 @@ fn build_html(body: &str, toc_entries: &[toc::TocEntry]) -> String {
                         }}
                         window.mdrMermaidLegends.render(pre);
                         pre.dataset.mdrRendered = 'true';
+                        pre.dataset.mdrTheme = mermaidTheme;
                     }});
                     document.dispatchEvent(new Event('mdr:mermaid-rendered'));
-                }}).catch(function(e) {{ console.error('Mermaid error:', e); }});
+                }}).catch(function(e) {{
+                    window.mdrMermaidError = String(e);
+                    console.error('Mermaid error:', e);
+                }});
             }} catch(e) {{
+                window.mdrMermaidError = String(e);
+                window.mdrMermaidReady = Promise.resolve();
                 console.error('Mermaid sync error:', e);
             }}
+            return window.mdrMermaidReady;
         }};
         if (document.readyState === 'loading') {{
             document.addEventListener('DOMContentLoaded', window.mdrRenderMermaid);
@@ -646,12 +828,16 @@ fn build_html(body: &str, toc_entries: &[toc::TocEntry]) -> String {
         }
     );
 
-    let custom_css = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .map(|h| h.join(".config/mdr/style.css"))
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_default();
+    let custom_css = if include_custom_style {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .map(|h| h.join(".config/mdr/style.css"))
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     // The CSP below is a second line of defence behind `sanitize_document_html`:
     // no network access at all (`default-src`/`connect-src 'none'`), no plugin
@@ -670,6 +856,7 @@ fn build_html(body: &str, toc_entries: &[toc::TocEntry]) -> String {
 <html>
 <head>
 <meta charset="utf-8">
+<title>{title}</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none';">
 <style>{css}</style>
 <style>
@@ -745,20 +932,86 @@ body.toc-hidden .content {{ margin-left: 0; }}
 }}
 @media print {{
     .sidebar, #shortcuts-overlay, #searchBar {{ display: none !important; }}
-    .content {{ margin-left: 0; max-width: none; }}
+    html, body {{
+        width: auto !important;
+        height: auto !important;
+    }}
+    body {{ display: block !important; }}
+    .content, body.toc-hidden .content {{
+        width: auto !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }}
+    .content table {{
+        width: 100% !important;
+        max-width: 100% !important;
+        box-shadow: none !important;
+    }}
+    .content th, .content td {{
+        padding: 4pt 5pt !important;
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+        word-wrap: break-word;
+        word-break: break-word;
+    }}
+    .content th code, .content td code {{
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }}
+    .content table.mdr-wide-table {{
+        table-layout: fixed;
+        font-size: 8.5pt;
+    }}
+    .content table.mdr-extra-wide-table {{ font-size: 7.5pt; }}
+    .content thead {{ display: table-header-group; }}
+    .content tr {{ break-inside: avoid; page-break-inside: avoid; }}
 }}
 </style>
 <style>{theme_overrides}</style>
 <style>{custom_css}</style>
+<style>{print_css}</style>
 </head>
 <body>
 <nav class="sidebar">
 <p class="sidebar-title">Table of Contents</p>
+<div class="document-actions">
+<button id="export-pdf-button" onclick="window.mdrActions.exportPdf()">Export PDF…</button>
+<select id="pdf-orientation" aria-label="PDF page orientation"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select>
+<button id="print-button" onclick="window.mdrActions.print()">Print…</button>
+<p id="pdf-export-status" role="status" aria-live="polite" hidden></p>
+</div>
 <ul>{toc}</ul>
+</nav>
+<nav class="print-toc" aria-label="Table of contents" hidden>
+<p class="print-toc-title">Table of Contents</p>
+<ul></ul>
 </nav>
 <div class="content">
 {body}
 </div>
+<script>
+(function() {{
+    // Column count is a more stable print signal than the current window width:
+    // the latter says little about the width of the paper selected in the print dialog.
+    window.mdrPrepareTables = function() {{
+        document.querySelectorAll('.content table').forEach(function(table) {{
+            var columns = Array.from(table.rows).reduce(function(max, row) {{
+                var count = Array.from(row.cells).reduce(function(total, cell) {{
+                    return total + Math.max(1, cell.colSpan || 1);
+                }}, 0);
+                return Math.max(max, count);
+            }}, 0);
+            table.classList.toggle('mdr-wide-table', columns >= 7);
+            table.classList.toggle('mdr-extra-wide-table', columns >= 10);
+        }});
+    }};
+    window.mdrPrepareTables();
+    window.addEventListener('beforeprint', window.mdrPrepareTables);
+}})();
+</script>
 <script>
 document.querySelector('.sidebar').addEventListener('click', function(e) {{
     if (e.target.tagName === 'A') {{
@@ -870,6 +1123,7 @@ document.querySelector('.sidebar').addEventListener('click', function(e) {{
 </script>
 {highlight_script}
 {mermaid_script}
+<script>{print_js}</script>
 <div id="expand-overlay"><div id="expand-content"></div></div>
 <script>
 (function() {{
@@ -950,6 +1204,8 @@ document.querySelector('.sidebar').addEventListener('click', function(e) {{
         body = body,
         highlight_script = highlight_script,
         mermaid_script = mermaid_script,
+        print_css = PRINT_CSS,
+        print_js = PRINT_JS,
         theme_overrides = theme_overrides,
         shortcuts_help = build_shortcuts_help_html(),
         keyboard_script = keyboard_script(),
@@ -1232,7 +1488,14 @@ const SHORTCUTS: &[Shortcut] = &[
         bindings: &["mod+p"],
         action: "print",
         label: "Ctrl/Cmd + P",
-        description: "Print or export to PDF",
+        description: "Open the system print dialog",
+        fires_while_typing: true,
+    },
+    Shortcut {
+        bindings: &["mod+shift+e"],
+        action: "exportPdf",
+        label: "Ctrl/Cmd + Shift + E",
+        description: "Export PDF with contents and bookmarks",
         fires_while_typing: true,
     },
     Shortcut {
@@ -1347,7 +1610,8 @@ const KEYBOARD_JS: &str = r#"
             var current = root.getAttribute('data-theme') || systemTheme();
             root.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
         },
-        print: function() { window.print(); },
+        print: function() { window.mdrPrint(); },
+        exportPdf: function() { window.mdrExportPdf(); },
         toggleHelp: function() {
             var help = el('shortcuts-overlay');
             if (!help) return;
@@ -2168,6 +2432,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn print_styles_remove_screen_layout_and_constrain_tables() {
+        let html = build_html(
+            "<table><thead><tr><th>Heading</th></tr></thead><tbody><tr><td>value</td></tr></tbody></table>",
+            &[],
+        );
+        for rule in [
+            ".content, body.toc-hidden .content",
+            "margin: 0 !important",
+            "padding: 0 !important",
+            ".content table",
+            "max-width: 100% !important",
+            "overflow-wrap: anywhere",
+            "display: table-header-group",
+            "page-break-inside: avoid",
+        ] {
+            assert!(html.contains(rule), "print CSS is missing {rule:?}");
+        }
+    }
+
+    #[test]
+    fn generated_page_classifies_wide_tables_for_printing() {
+        let html = build_html("<table><tr><td>value</td></tr></table>", &[]);
+        assert!(html.contains("window.mdrPrepareTables = function()"));
+        assert!(html.contains("addEventListener('beforeprint'"));
+        assert!(html.contains("cell.colSpan"));
+        assert!(html.contains("columns >= 7"));
+        assert!(html.contains("columns >= 10"));
+        assert!(html.contains("mdr-wide-table"));
+        assert!(html.contains("mdr-extra-wide-table"));
+    }
+
+    #[test]
+    fn live_reload_reclassifies_tables_for_printing() {
+        let swap = document_swap_script(
+            "| A | B | C | D | E | F | G |\n|---|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | 6 | 7 |",
+            Path::new("."),
+        );
+        assert!(swap.contains("window.mdrPrepareTables()"));
+    }
+
     // --- theme toggle ---
 
     #[test]
@@ -2312,8 +2617,11 @@ mod tests {
     #[test]
     #[ignore = "exports a page for the WebKitGTK rendering regression check"]
     fn export_mermaid_test_page() {
-        let md = std::fs::read_to_string(std::env::var("MDR_TEST_MARKDOWN").unwrap()).unwrap();
-        let page = build_html(&parse_markdown(&md), &[]);
+        let path = PathBuf::from(std::env::var("MDR_TEST_MARKDOWN").unwrap())
+            .canonicalize()
+            .unwrap();
+        let md = std::fs::read_to_string(&path).unwrap();
+        let page = pdf_html(&md, path.parent().unwrap());
         std::fs::write(std::env::var("MDR_TEST_HTML").unwrap(), &page).unwrap();
     }
 
