@@ -117,6 +117,10 @@ mdr --offline README.md
 # Force the palette used to highlight code in the terminal
 mdr --theme light README.md
 
+# Choose rendering font (space-grotesk [default], google-sans, system, or any installed font)
+mdr --font google-sans README.md
+mdr -f system README.md
+
 # Show help
 mdr --help
 ```

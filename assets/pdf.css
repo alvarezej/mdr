@@ -1,7 +1,7 @@
 /* Dedicated export typography. Screen themes and viewer zoom are deliberately
    absent: all dimensions are in physical units and apply during rendering too. */
 html.mdr-pdf, html.mdr-pdf body {
-    font-family: Arial, "Noto Sans", sans-serif !important;
+    font-family: var(--mdr-font-family, Arial, "Noto Sans", sans-serif) !important;
     font-size: 10pt !important;
     line-height: 1.45 !important;
     height: auto !important;

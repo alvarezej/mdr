@@ -91,6 +91,28 @@ mod tests {
     }
 
     #[test]
+    fn load_parses_font() {
+        let path = tmp_config("font_gs", "font \"google-sans\"\n");
+        assert_eq!(load(&path).unwrap().font.as_deref(), Some("google-sans"));
+        let _ = std::fs::remove_file(&path);
+
+        let path2 = tmp_config("font_unquoted", "font space-grotesk\n");
+        assert_eq!(load(&path2).unwrap().font.as_deref(), Some("space-grotesk"));
+        let _ = std::fs::remove_file(&path2);
+    }
+
+    #[test]
+    fn an_invalid_font_is_refused_rather_than_stored() {
+        let path = tmp_config("font_empty", "font \"\"\n");
+        assert_eq!(load(&path).unwrap().font, None);
+        let _ = std::fs::remove_file(&path);
+
+        let path2 = tmp_config("font_unsafe", "font \"Arial; color: red\"\n");
+        assert_eq!(load(&path2).unwrap().font, None);
+        let _ = std::fs::remove_file(&path2);
+    }
+
+    #[test]
     fn load_returns_defaults_for_missing_file() {
         let path = PathBuf::from("/nonexistent/mdr_no_such_config.kdl");
         let cfg = load(&path).unwrap();
@@ -98,6 +120,7 @@ mod tests {
         assert!(cfg.verbose.is_none());
         assert!(cfg.offline.is_none());
         assert!(cfg.theme.is_none());
+        assert!(cfg.font.is_none());
     }
 
     #[test]
@@ -111,6 +134,7 @@ mod tests {
         assert!(content.contains("backend webview"));
         assert!(content.contains("offline"));
         assert!(content.contains("theme"));
+        assert!(content.contains("font"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -130,6 +154,8 @@ pub struct Config {
     pub offline: Option<bool>,
     /// Colour scheme to assume: `auto`, `dark` or `light`.
     pub theme: Option<String>,
+    /// Rendering font: `space-grotesk`, `google-sans`, `system`, or a system font name.
+    pub font: Option<String>,
 }
 
 const DEFAULT_CONFIG: &str = "\
@@ -147,6 +173,10 @@ backend webview
 // Colour scheme the terminal backend assumes for syntax highlighting:
 // auto (read COLORFGBG, fall back to dark), dark, or light
 // theme \"auto\"
+
+// Rendering font for GUI/webview backends and PDF export:
+// space-grotesk (default), google-sans, system, or any installed font family name
+// font \"space-grotesk\"
 ";
 
 /// Returns the default config file path: `~/.config/mdr/config.kdl`.
@@ -207,6 +237,14 @@ pub fn load(path: &PathBuf) -> Result<Config, Box<dyn std::error::Error>> {
                             "mdr: unknown theme '{}', expected 'auto', 'dark' or 'light'",
                             s
                         );
+                    }
+                }
+            }
+            "font" => {
+                if let Some(kdl::KdlValue::String(s)) = node.get(0) {
+                    match crate::core::Font::parse(s) {
+                        Ok(_) => cfg.font = Some(s.clone()),
+                        Err(e) => eprintln!("mdr: invalid font '{}': {}", s, e),
                     }
                 }
             }

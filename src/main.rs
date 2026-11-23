@@ -49,6 +49,10 @@ struct Cli {
     #[arg(long, value_name = "THEME", value_parser = parse_theme)]
     theme: Option<String>,
 
+    /// Rendering font for GUI/webview backends and PDF export: space-grotesk (default), google-sans, system, or a system font name
+    #[arg(short = 'f', long, value_name = "FONT", value_parser = parse_font)]
+    font: Option<String>,
+
     /// Path to config file [default: ~/.config/mdr/config.kdl]
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
@@ -94,6 +98,10 @@ fn parse_theme(s: &str) -> Result<String, String> {
             s
         )),
     }
+}
+
+fn parse_font(s: &str) -> Result<String, String> {
+    core::Font::parse(s).map(|_| s.to_string())
 }
 
 fn parse_backend(s: &str) -> Result<String, String> {
@@ -331,6 +339,13 @@ fn run(tmp_file: &mut Option<PathBuf>) -> i32 {
             .and_then(core::Theme::parse)
             .unwrap_or_default(),
     );
+    core::set_font(
+        cli.font
+            .as_deref()
+            .or(cfg.font.as_deref())
+            .and_then(|s| core::Font::parse(s).ok())
+            .unwrap_or_default(),
+    );
 
     let from_stdin = |tmp_file: &mut Option<PathBuf>| match read_stdin_to_tmpfile() {
         Ok(path) => {
@@ -461,6 +476,22 @@ mod tests {
             .unwrap()
             .theme
             .is_none());
+    }
+
+    #[test]
+    fn cli_parses_and_validates_the_font_flag() {
+        let cli = Cli::try_parse_from(["mdr", "--font", "google-sans", "f.md"]).unwrap();
+        assert_eq!(cli.font.as_deref(), Some("google-sans"));
+
+        let short = Cli::try_parse_from(["mdr", "-f", "space-grotesk", "f.md"]).unwrap();
+        assert_eq!(short.font.as_deref(), Some("space-grotesk"));
+
+        let custom = Cli::try_parse_from(["mdr", "--font", "Inter", "f.md"]).unwrap();
+        assert_eq!(custom.font.as_deref(), Some("Inter"));
+
+        assert!(Cli::try_parse_from(["mdr", "--font", "", "f.md"]).is_err());
+        assert!(Cli::try_parse_from(["mdr", "--font", "Arial; color:red", "f.md"]).is_err());
+        assert!(Cli::try_parse_from(["mdr", "f.md"]).unwrap().font.is_none());
     }
 
     #[test]

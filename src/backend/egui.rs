@@ -6,12 +6,87 @@ use std::sync::mpsc::Receiver;
 use crate::core::mermaid::preprocess_mermaid_for_egui;
 use crate::core::toc::{self, TocEntry};
 
-/// Load system fonts into egui to support non-Latin scripts (CJK, etc.).
-fn load_system_fonts(ctx: &egui::Context) {
+/// Load the selected rendering font and system fallback fonts into egui.
+fn load_fonts(ctx: &egui::Context, selected: &crate::core::Font) {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
 
+    let fonts = build_font_definitions(&db, selected);
+    ctx.set_fonts(fonts);
+}
+
+fn find_system_font(db: &fontdb::Database, requested: &str) -> Option<(Vec<u8>, u32)> {
+    let mut best: Option<(u32, &fontdb::FaceInfo)> = None;
+    for face in db.faces() {
+        let matches = face
+            .families
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(requested));
+        if !matches {
+            continue;
+        }
+        // Prefer upright, normal-stretch, weight-400 (regular) faces.
+        let style_penalty = if face.style == fontdb::Style::Normal {
+            0
+        } else {
+            1000
+        };
+        let stretch_penalty = if face.stretch == fontdb::Stretch::Normal {
+            0
+        } else {
+            500
+        };
+        let weight_penalty = face.weight.0.abs_diff(fontdb::Weight::NORMAL.0) as u32;
+        let score = style_penalty + stretch_penalty + weight_penalty;
+        if best.is_none_or(|(best_score, _)| score < best_score) {
+            best = Some((score, face));
+        }
+    }
+
+    let (_, face) = best?;
+    let bytes = match &face.source {
+        fontdb::Source::Binary(data) => data.as_ref().as_ref().to_vec(),
+        fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => {
+            std::fs::read(path).ok()?
+        }
+    };
+    Some((bytes, face.index))
+}
+
+fn build_font_definitions(
+    db: &fontdb::Database,
+    selected: &crate::core::Font,
+) -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
+
+    if let Some(ttf_bytes) = selected.embedded_ttf() {
+        let key = "mdr_primary".to_string();
+        fonts
+            .font_data
+            .insert(key.clone(), egui::FontData::from_static(ttf_bytes).into());
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, key);
+    } else if let crate::core::Font::Custom(name) = selected {
+        if let Some((bytes, index)) = find_system_font(db, name) {
+            let key = "mdr_primary".to_string();
+            let mut font_data = egui::FontData::from_owned(bytes);
+            font_data.index = index;
+            fonts.font_data.insert(key.clone(), font_data.into());
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, key);
+        } else {
+            crate::vlog!(
+                "egui: font '{}' not found in system fonts, falling back to default",
+                name
+            );
+        }
+    }
 
     let mut counter = 0usize;
     for face in db.faces() {
@@ -48,7 +123,7 @@ fn load_system_fonts(ctx: &egui::Context) {
         counter += 1;
     }
 
-    ctx.set_fonts(fonts);
+    fonts
 }
 
 pub fn run(file_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -92,7 +167,7 @@ pub fn run(file_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         "mdr",
         options,
         Box::new(move |cc| {
-            load_system_fonts(&cc.egui_ctx);
+            load_fonts(&cc.egui_ctx, &crate::core::font());
             Ok(Box::new(MdrApp {
                 markdown,
                 sections,
@@ -1098,5 +1173,57 @@ mod tests {
                 original
             );
         }
+    }
+
+    #[test]
+    fn bundled_fonts_become_primary_proportional_font_without_changing_monospace() {
+        let db = fontdb::Database::new();
+        let default_mono = egui::FontDefinitions::default()
+            .families
+            .get(&egui::FontFamily::Monospace)
+            .and_then(|f| f.first())
+            .cloned();
+
+        for font in [
+            crate::core::Font::SpaceGrotesk,
+            crate::core::Font::GoogleSans,
+        ] {
+            let defs = build_font_definitions(&db, &font);
+            assert_eq!(
+                defs.families
+                    .get(&egui::FontFamily::Proportional)
+                    .and_then(|f| f.first())
+                    .map(String::as_str),
+                Some("mdr_primary"),
+                "{font:?} should be the primary proportional font"
+            );
+            assert_eq!(
+                defs.families
+                    .get(&egui::FontFamily::Monospace)
+                    .and_then(|f| f.first())
+                    .cloned(),
+                default_mono,
+                "monospace font must remain unchanged"
+            );
+            assert!(defs.font_data.contains_key("mdr_primary"));
+        }
+
+        let sys_defs = build_font_definitions(&db, &crate::core::Font::System);
+        assert!(!sys_defs.font_data.contains_key("mdr_primary"));
+    }
+
+    #[test]
+    fn custom_font_resolves_matching_face_from_fontdb() {
+        let mut db = fontdb::Database::new();
+        db.load_font_data(crate::core::font::SPACE_GROTESK_REGULAR_TTF.to_vec());
+
+        let defs = build_font_definitions(&db, &crate::core::Font::Custom("Space Grotesk".into()));
+        assert_eq!(
+            defs.families
+                .get(&egui::FontFamily::Proportional)
+                .and_then(|f| f.first())
+                .map(String::as_str),
+            Some("mdr_primary")
+        );
     }
 }

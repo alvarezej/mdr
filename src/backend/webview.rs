@@ -731,6 +731,20 @@ fn build_html_with_style(
     toc_entries: &[toc::TocEntry],
     include_custom_style: bool,
 ) -> String {
+    build_html_with_options(
+        body,
+        toc_entries,
+        include_custom_style,
+        &crate::core::font(),
+    )
+}
+
+fn build_html_with_options(
+    body: &str,
+    toc_entries: &[toc::TocEntry],
+    include_custom_style: bool,
+    font: &crate::core::Font,
+) -> String {
     // Everything coming from the document is filtered here, before mdr's own
     // template is wrapped around it (#62). mdr's scripts are added afterwards
     // and are never sanitised.
@@ -839,10 +853,12 @@ fn build_html_with_style(
         String::new()
     };
 
+    let font_css = font.webview_css();
+
     // The CSP below is a second line of defence behind `sanitize_document_html`:
     // no network access at all (`default-src`/`connect-src 'none'`), no plugin
-    // or frame, no form submission, no `<base>` rewriting; images may only be
-    // the `data:` URIs mdr inlines itself.
+    // or frame, no form submission, no `<base>` rewriting; images and bundled
+    // fonts may only be the `data:` URIs mdr inlines itself.
     //
     // `script-src` still needs `'unsafe-inline'`: every script of the page
     // (search, keyboard, highlight.js, Mermaid) is inline, so dropping it would
@@ -857,7 +873,7 @@ fn build_html_with_style(
 <head>
 <meta charset="utf-8">
 <title>{title}</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none';">
 <style>{css}</style>
 <style>
 .expandable {{ display: block; width: 100%; position: relative; margin: 0 auto; }}
@@ -973,6 +989,7 @@ body.toc-hidden .content {{ margin-left: 0; }}
 <style>{theme_overrides}</style>
 <style>{custom_css}</style>
 <style>{print_css}</style>
+<style>{font_css}</style>
 </head>
 <body>
 <nav class="sidebar">
@@ -1210,6 +1227,7 @@ document.querySelector('.sidebar').addEventListener('click', function(e) {{
         shortcuts_help = build_shortcuts_help_html(),
         keyboard_script = keyboard_script(),
         custom_css = custom_css,
+        font_css = font_css,
     )
 }
 
@@ -2607,11 +2625,38 @@ mod tests {
             "form-action 'none'",
             "base-uri 'none'",
             "connect-src 'none'",
-            // Local images are inlined, so this one has to stay.
+            // Local images and bundled fonts are inlined, so these have to stay.
             "img-src data:",
+            "font-src data:",
         ] {
             assert!(page.contains(directive), "CSP misses {directive}: {page}");
         }
+    }
+
+    #[test]
+    fn build_html_applies_selected_font() {
+        let sg = build_html_with_options("<p>hi</p>", &[], false, &crate::core::Font::SpaceGrotesk);
+        assert!(sg.contains("@font-face"));
+        assert!(sg.contains(r#"font-family: "Space Grotesk""#));
+        assert!(sg.contains("data:font/ttf;base64,"));
+
+        let gs = build_html_with_options("<p>hi</p>", &[], false, &crate::core::Font::GoogleSans);
+        assert!(gs.contains("@font-face"));
+        assert!(gs.contains(r#"font-family: "Google Sans""#));
+        assert!(gs.contains("data:font/ttf;base64,"));
+
+        let sys = build_html_with_options("<p>hi</p>", &[], false, &crate::core::Font::System);
+        assert!(!sys.contains("@font-face"));
+        assert!(!sys.contains("--mdr-font-family:"));
+
+        let custom = build_html_with_options(
+            "<p>hi</p>",
+            &[],
+            false,
+            &crate::core::Font::Custom("Inter".into()),
+        );
+        assert!(!custom.contains("@font-face"));
+        assert!(custom.contains(r#"--mdr-font-family: "Inter""#));
     }
 
     #[test]

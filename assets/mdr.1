@@ -59,6 +59,12 @@ Use landscape A4 pages when used with
 Select a Chrome/Chromium executable for PDF export instead of auto-detection.
 The MDR_PDF_BROWSER environment variable can also select the executable.
 .TP
+.BR \-f ", " \-\-font " " \fIFONT\fR
+Rendering font for the graphical backends and PDF export:
+.BR space\-grotesk " (default), " google\-sans ", " system ,
+or any installed system font family name. Can also be set in the config file with
+.BR "font \"google-sans\"" .
+.TP
 .BR \-\-config " " \fIPATH\fR
 Path to the config file. Defaults to
 .IR ~/.config/mdr/config.kdl .
@@ -94,6 +100,11 @@ Boolean, enables verbose logging by default.
 .TP
 .B offline
 Boolean, never access the network.
+.TP
+.B font
+Rendering font for graphical backends and PDF export:
+.BR space\-grotesk " (default), " google\-sans ", " system ,
+or any installed system font family name.
 .PP
 Booleans use the KDL syntax
 .RB ( "verbose #true" ", " "offline #false" );

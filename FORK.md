@@ -49,6 +49,10 @@ repository. Sharing a change back with CleverCloud would require a pull request.
   A fixed-width number column keeps long or wrapped entries aligned across pages.
 - Keep contents links aligned with headings containing HTML entities, inline
   code, Unicode, repeated titles, or line breaks.
+- Embed **Space Grotesk** (default) and **Google Sans** variable fonts for
+  offline rendering across the `webview`, `egui`, and `--export-pdf` pipelines,
+  selectable via `-f`/`--font` (`space-grotesk`, `google-sans`, `system`, or
+  any installed font family name) or `font "..."` in `~/.config/mdr/config.kdl`.
 
 These Mermaid changes apply to the webview backend. The native egui and terminal
 rendering paths still use their existing renderer.

@@ -1,4 +1,5 @@
 pub mod config;
+pub mod font;
 // Only the graphical backends set a window icon.
 #[cfg(any(feature = "egui-backend", feature = "webview-backend"))]
 pub mod icon;
@@ -24,7 +25,10 @@ pub mod slug;
 pub mod toc;
 pub mod watcher;
 
+pub use font::Font;
+
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{OnceLock, RwLock};
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
@@ -91,6 +95,27 @@ pub fn theme() -> Theme {
         2 => Theme::Light,
         _ => Theme::Auto,
     }
+}
+
+static FONT: OnceLock<RwLock<Font>> = OnceLock::new();
+
+fn font_cell() -> &'static RwLock<Font> {
+    FONT.get_or_init(|| RwLock::new(Font::default()))
+}
+
+pub fn set_font(font: Font) {
+    if let Ok(mut guard) = font_cell().write() {
+        *guard = font;
+    }
+}
+
+/// Selected rendering font for the graphical backends and PDF export.
+#[cfg(any(feature = "egui-backend", feature = "webview-backend"))]
+pub fn font() -> Font {
+    font_cell()
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
 }
 
 /// Log a message if verbose mode is enabled.
